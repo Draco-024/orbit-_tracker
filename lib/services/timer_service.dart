@@ -10,13 +10,9 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
   
   TimerService._internal() {
     WidgetsBinding.instance.addObserver(this);
-    
     NotificationService.onAction = (actionId) {
-      if (actionId == 'pause_action') {
-        pause();
-      } else if (actionId == 'stop_action') {
-        stopAndCancel();
-      }
+      if (actionId == 'pause_action') pause();
+      else if (actionId == 'stop_action') stopAndCancel();
     };
   }
 
@@ -29,7 +25,7 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
   DateTime? endTime;
   Timer? _timer;
 
-  Function(Habit, int)? onTimerComplete;
+  Function(Habit, int, bool)? onTimerComplete;
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -52,9 +48,8 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
         final habit = habits.firstWhere((h) => h.id == savedHabitId);
         
         if (now.isAfter(savedEndTime)) {
-          if (onTimerComplete != null) {
-            onTimerComplete!(habit, savedTotalSecs);
-          }
+          // GHOST COMPLETE: Finished while app was dead.
+          if (onTimerComplete != null) onTimerComplete!(habit, savedTotalSecs, true);
           await _clearDiskState();
         } else {
           activeHabit = habit;
@@ -93,7 +88,8 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
       if (remaining <= 0) {
         currentSeconds = 0;
         elapsedSeconds = totalSeconds; 
-        complete();
+        // Woke up and time has passed -> IT'S A GHOST. No sudden popup!
+        complete(isGhost: true); 
       } else {
         currentSeconds = remaining;
         elapsedSeconds = totalSeconds - currentSeconds;
@@ -121,7 +117,7 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
     
     _saveToDisk(activeHabit!, endTime!, totalSeconds);
     
-    NotificationService().showActiveTimerNotification(activeHabit!.name);
+    NotificationService().showActiveTimerNotification(activeHabit!.name, currentSeconds);
     NotificationService().scheduleFocusComplete(currentSeconds, activeHabit!.name);
 
     _startInternalTimer();
@@ -130,13 +126,25 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
 
   void _startInternalTimer() {
     _timer?.cancel();
-    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (currentSeconds > 0) {
-        currentSeconds--;
-        elapsedSeconds++;
-        notifyListeners(); 
-      } else {
-        complete();
+    _timer = Timer.periodic(const Duration(milliseconds: 500), (timer) {
+      if (endTime != null && !isPaused) {
+        final now = DateTime.now();
+        final remaining = endTime!.difference(now).inSeconds;
+        
+        if (remaining <= 0) {
+          currentSeconds = 0;
+          elapsedSeconds = totalSeconds;
+          
+          // If it overshot by more than 1 second, it means the app was frozen in the background. Flag as ghost to prevent jump-scare popups.
+          bool wasAsleep = endTime!.difference(now).inMilliseconds < -1000;
+          complete(isGhost: wasAsleep); 
+        } else {
+          if (currentSeconds != remaining) {
+            currentSeconds = remaining;
+            elapsedSeconds = totalSeconds - currentSeconds;
+            notifyListeners(); 
+          }
+        }
       }
     });
   }
@@ -161,27 +169,23 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
-  // FIXED: MADE THIS ASYNC SO IT DOESN'T CRASH THE UI THREAD
-  Future<void> complete() async {
+  Future<void> complete({bool isGhost = false}) async {
     _timer?.cancel();
     isRunning = false;
     isPaused = false;
     
     await _clearDiskState();
-    
-    // 1. SAFELY STOP THE FOREGROUND "HOTSPOT" SERVICE
     await NotificationService().stopForegroundServiceSafely();
     await NotificationService().cancelFocusTimerAlarm();
 
-    // 2. BREATHER: Give modern Android OS 300ms to register the service teardown before firing a new alert
-    await Future.delayed(const Duration(milliseconds: 300));
-
     if (activeHabit != null) {
-      // 3. FIRE THE SWIPEABLE TASK COMPLETED ALERT
-      await NotificationService().showTaskCompletedNotification(activeHabit!.name);
+      // If it's a ghost (completed in background), the OS Alarm already fired the notification. Don't double fire!
+      if (!isGhost) {
+        await NotificationService().showTaskCompletedNotification(activeHabit!.name);
+      }
 
       if (onTimerComplete != null) {
-        onTimerComplete!(activeHabit!, elapsedSeconds); 
+        onTimerComplete!(activeHabit!, elapsedSeconds, isGhost); 
       }
     }
     
