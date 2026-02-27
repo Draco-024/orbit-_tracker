@@ -56,7 +56,9 @@ class NotificationService {
       final bool? granted =
           await androidImplementation?.requestNotificationsPermission();
       
-      await androidImplementation?.requestExactAlarmsPermission();
+      try {
+        await androidImplementation?.requestExactAlarmsPermission();
+      } catch (_) {}
       
       isAllowed = granted ?? false;
     } else if (Platform.isIOS) {
@@ -73,8 +75,7 @@ class NotificationService {
     return isAllowed;
   }
 
-  // 1. PERMANENT STICKY NOTIFICATION (FOREGROUND SERVICE)
-  Future<void> showActiveTimerNotification(String habitName, int durationInSeconds) async {
+  Future<void> showActiveTimerNotification(String habitName) async {
     if (kIsWeb) return;
     final prefs = await SharedPreferences.getInstance();
     if (!(prefs.getBool('notifications_allowed') ?? false)) return;
@@ -87,18 +88,17 @@ class NotificationService {
         1,
         '⏱️ Focus Mode Active',
         'Currently focusing on "$habitName".',
-        notificationDetails: AndroidNotificationDetails(
-          'orbit_active_timer_v7', 
+        notificationDetails: const AndroidNotificationDetails(
+          'orbit_active_timer_v11', 
           'Active Timer',
           channelDescription: 'Ongoing focus timer',
           importance: Importance.low,
           priority: Priority.low,
-          ongoing: true, // UN-REMOVABLE
+          ongoing: true, // HOTSPOT PINNED
           usesChronometer: true,
-          timeoutAfter: durationInSeconds * 1000, 
           actions: <AndroidNotificationAction>[
-            const AndroidNotificationAction('pause_action', '⏸️ Pause', showsUserInterface: true),
-            const AndroidNotificationAction('stop_action', '⏹️ Stop', showsUserInterface: true),
+            AndroidNotificationAction('pause_action', '⏸️ Pause', showsUserInterface: true),
+            AndroidNotificationAction('stop_action', '⏹️ Stop', showsUserInterface: true),
           ],
         ),
       );
@@ -110,22 +110,21 @@ class NotificationService {
     }
   }
 
-  // 2. INSTANT TASK COMPLETED NOTIFICATION (NEW FIX)
   Future<void> showTaskCompletedNotification(String habitName) async {
     if (kIsWeb) return;
     final prefs = await SharedPreferences.getInstance();
     if (!(prefs.getBool('notifications_allowed') ?? false)) return;
 
     await flutterLocalNotificationsPlugin.show(
-      0, // ID 0
+      0, 
       '✅ Task Completed',
       'You completed your focus session for "$habitName"!',
       const NotificationDetails(
         android: AndroidNotificationDetails(
-          'orbit_focus_complete_v7', 
+          'orbit_focus_complete_v11', 
           'Timer Complete Alerts',
           channelDescription: 'Alerts when a focus session ends',
-          importance: Importance.max, // POPS UP LOUDLY
+          importance: Importance.max, 
           priority: Priority.max,     
           visibility: NotificationVisibility.public, 
           playSound: true,
@@ -136,33 +135,42 @@ class NotificationService {
     );
   }
 
-  // 3. BACKUP ALARM (Just in case)
   Future<void> scheduleFocusComplete(int seconds, String habitName) async {
     if (kIsWeb) return;
     final prefs = await SharedPreferences.getInstance();
     if (!(prefs.getBool('notifications_allowed') ?? false)) return;
 
-    await flutterLocalNotificationsPlugin.zonedSchedule(
-      0, 
-      '✅ Task Completed',
-      'You completed your focus session for "$habitName"!',
-      tz.TZDateTime.now(tz.local).add(Duration(seconds: seconds)),
-      const NotificationDetails(
-        android: AndroidNotificationDetails(
-          'orbit_focus_complete_v7', 
-          'Timer Complete Alerts',
-          importance: Importance.max, 
-          priority: Priority.max,     
-          visibility: NotificationVisibility.public, 
+    try {
+      await flutterLocalNotificationsPlugin.zonedSchedule(
+        0, 
+        '✅ Task Completed',
+        'You completed your focus session for "$habitName"!',
+        tz.TZDateTime.now(tz.local).add(Duration(seconds: seconds)),
+        const NotificationDetails(
+          android: AndroidNotificationDetails(
+            'orbit_focus_complete_v11', 
+            'Timer Complete Alerts',
+            importance: Importance.max, 
+            priority: Priority.max,     
+            visibility: NotificationVisibility.public, 
+          ),
+          iOS: DarwinNotificationDetails(),
         ),
-        iOS: DarwinNotificationDetails(),
-      ),
-      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle, 
-      uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
-    );
+        androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle, 
+        uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
+      );
+    } catch (_) {
+      // Fallback if Android 14+ forces a deny
+      await flutterLocalNotificationsPlugin.zonedSchedule(
+        0, '✅ Task Completed', 'You completed your focus session for "$habitName"!',
+        tz.TZDateTime.now(tz.local).add(Duration(seconds: seconds)),
+        const NotificationDetails(android: AndroidNotificationDetails('orbit_focus_complete_v11', 'Timer Complete Alerts', importance: Importance.high, priority: Priority.high)),
+        androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle, 
+        uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
+      );
+    }
   }
 
-  // 4. DAILY 8 PM REMINDER
   Future<void> scheduleDailyReminder() async {
     if (kIsWeb) return;
     final prefs = await SharedPreferences.getInstance();
@@ -170,37 +178,34 @@ class NotificationService {
 
     final now = tz.TZDateTime.now(tz.local);
     var scheduledDate = tz.TZDateTime(tz.local, now.year, now.month, now.day, 20, 0);
-
-    if (scheduledDate.isBefore(now)) {
-      scheduledDate = scheduledDate.add(const Duration(days: 1));
-    }
+    if (scheduledDate.isBefore(now)) scheduledDate = scheduledDate.add(const Duration(days: 1));
 
     await flutterLocalNotificationsPlugin.zonedSchedule(
-      2, 
-      'Orbit Status Check 🪐',
-      'Have you completed your routines today?',
-      scheduledDate,
-      const NotificationDetails(
-        android: AndroidNotificationDetails('orbit_daily_reminder_v7', 'Daily Reminders'),
-        iOS: DarwinNotificationDetails(),
-      ),
+      2, 'Orbit Status Check 🪐', 'Have you completed your routines today?', scheduledDate,
+      const NotificationDetails(android: AndroidNotificationDetails('orbit_daily_reminder_v11', 'Daily Reminders')),
       androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
       uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
       matchDateTimeComponents: DateTimeComponents.time,
     );
   }
 
-  Future<void> cancelActiveTimerNotification() async {
+  Future<void> stopForegroundServiceSafely() async {
     if (kIsWeb) return;
     if (Platform.isAndroid) {
-      await flutterLocalNotificationsPlugin.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()?.stopForegroundService();
+      try {
+        await flutterLocalNotificationsPlugin.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()?.stopForegroundService();
+      } catch (_) {}
     }
-    await flutterLocalNotificationsPlugin.cancel(1); 
+    try {
+      await flutterLocalNotificationsPlugin.cancel(1); 
+    } catch (_) {}
   }
 
   Future<void> cancelFocusTimerAlarm() async {
     if (kIsWeb) return;
-    await flutterLocalNotificationsPlugin.cancel(0); 
+    try {
+      await flutterLocalNotificationsPlugin.cancel(0); 
+    } catch (_) {}
   }
 
   Future<void> cancelNotifications() async {

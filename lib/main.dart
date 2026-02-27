@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:wakelock_plus/wakelock_plus.dart'; // NEW IMPORT
 import 'screens/splash_screen.dart'; 
 import 'services/notification_service.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 // Global Notifier for the entire app
 final ValueNotifier<int> accentPaletteNotifier = ValueNotifier(0); 
@@ -10,6 +11,9 @@ final ValueNotifier<int> accentPaletteNotifier = ValueNotifier(0);
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await NotificationService().init();
+  
+  // NEW: Forces the screen to NEVER turn off while the app is in the foreground
+  WakelockPlus.enable();
   
   // PRE-LOAD THEME: Ensures the Splash Screen instantly knows what color to be!
   final prefs = await SharedPreferences.getInstance();

@@ -42,7 +42,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this); 
     _confettiController = ConfettiController(duration: const Duration(seconds: 2));
     
-    // Load habits, then IMMEDIATELY check if a timer finished while the app was dead
     _loadData().then((_) {
       TimerService().restoreState(habits);
     });
@@ -80,8 +79,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     } 
   }
 
+  // --- SAFE UI EXECUTION ---
   void _handleTimerComplete(Habit habit, int elapsedSeconds) async {
-    // 1. SILENT DATA SAVE (Works 100% of the time, even if app is closed/locked)
     bool newlyCompleted = false;
     int index = habits.indexWhere((h) => h.id == habit.id);
     
@@ -96,28 +95,36 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       }
     }
     
-    // Force write to disk immediately
     await _saveHabits();
 
-    // 2. STOP HERE IF APP IS NOT VISIBLE. This completely prevents the crash.
+    if (mounted) {
+      setState(() {
+        if (newlyCompleted) _checkCelebration();
+      });
+    }
+
+    // PREVENTS THE UI CRASH IF APP IS IN THE BACKGROUND
     if (!mounted || WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
       return; 
     }
 
-    // 3. UI UPDATES (Only runs if you are actively looking at the app)
-    HapticFeedback.heavyImpact();
-    setState(() {
-      if (newlyCompleted) _checkCelebration();
+    // DRAWS THE VISUAL POPUP SMOOTHLY
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        HapticFeedback.heavyImpact();
+        try {
+          ScaffoldMessenger.of(context).clearSnackBars();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text("✅ Task Completed: ${habit.name}!"),
+              backgroundColor: Color(habit.colorValue),
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            ),
+          );
+        } catch (_) {}
+      }
     });
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text("✅ Task Completed: ${habit.name}!"),
-        backgroundColor: Color(habit.colorValue),
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      ),
-    );
   }
 
   Future<void> _loadData() async {

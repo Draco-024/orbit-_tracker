@@ -38,7 +38,6 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  // --- NEW: THE "DEAD APP" RECOVERY SYSTEM ---
   Future<void> restoreState(List<Habit> habits) async {
     final prefs = await SharedPreferences.getInstance();
     final savedHabitId = prefs.getString('orbit_active_timer_habit');
@@ -53,13 +52,11 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
         final habit = habits.firstWhere((h) => h.id == savedHabitId);
         
         if (now.isAfter(savedEndTime)) {
-          // The timer finished while the app was completely closed!
           if (onTimerComplete != null) {
             onTimerComplete!(habit, savedTotalSecs);
           }
           await _clearDiskState();
         } else {
-          // App was reopened and timer is STILL running. Resume the UI!
           activeHabit = habit;
           totalSeconds = savedTotalSecs;
           currentSeconds = savedEndTime.difference(now).inSeconds;
@@ -71,7 +68,7 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
           notifyListeners();
         }
       } catch (e) {
-        await _clearDiskState(); // Habit was deleted or not found
+        await _clearDiskState(); 
       }
     }
   }
@@ -89,7 +86,6 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
     await prefs.remove('orbit_active_timer_end');
     await prefs.remove('orbit_active_timer_total');
   }
-  // -------------------------------------------
 
   void syncBackgroundTime() {
     if (isRunning && !isPaused && endTime != null) {
@@ -123,11 +119,9 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
     isPaused = false;
     endTime = DateTime.now().add(Duration(seconds: currentSeconds));
     
-    // Save to hard drive immediately in case user swipes app away
     _saveToDisk(activeHabit!, endTime!, totalSeconds);
     
-    // Trigger OS-level background notifications
-    NotificationService().showActiveTimerNotification(activeHabit!.name, currentSeconds);
+    NotificationService().showActiveTimerNotification(activeHabit!.name);
     NotificationService().scheduleFocusComplete(currentSeconds, activeHabit!.name);
 
     _startInternalTimer();
@@ -150,8 +144,8 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
   void pause() {
     isPaused = true;
     _timer?.cancel();
-    _clearDiskState(); // Clear hard drive state
-    NotificationService().cancelActiveTimerNotification(); 
+    _clearDiskState(); 
+    NotificationService().stopForegroundServiceSafely(); 
     NotificationService().cancelFocusTimerAlarm(); 
     notifyListeners();
   }
@@ -161,23 +155,34 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
     isPaused = false;
     _timer?.cancel();
     _clearDiskState();
-    NotificationService().cancelActiveTimerNotification();
+    NotificationService().stopForegroundServiceSafely();
     NotificationService().cancelFocusTimerAlarm(); 
     activeHabit = null;
     notifyListeners();
   }
 
-  void complete() {
+  // FIXED: MADE THIS ASYNC SO IT DOESN'T CRASH THE UI THREAD
+  Future<void> complete() async {
     _timer?.cancel();
     isRunning = false;
     isPaused = false;
     
-    // Clear state
-    _clearDiskState();
-    NotificationService().cancelActiveTimerNotification();
+    await _clearDiskState();
+    
+    // 1. SAFELY STOP THE FOREGROUND "HOTSPOT" SERVICE
+    await NotificationService().stopForegroundServiceSafely();
+    await NotificationService().cancelFocusTimerAlarm();
 
-    if (activeHabit != null && onTimerComplete != null) {
-      onTimerComplete!(activeHabit!, elapsedSeconds); 
+    // 2. BREATHER: Give modern Android OS 300ms to register the service teardown before firing a new alert
+    await Future.delayed(const Duration(milliseconds: 300));
+
+    if (activeHabit != null) {
+      // 3. FIRE THE SWIPEABLE TASK COMPLETED ALERT
+      await NotificationService().showTaskCompletedNotification(activeHabit!.name);
+
+      if (onTimerComplete != null) {
+        onTimerComplete!(activeHabit!, elapsedSeconds); 
+      }
     }
     
     activeHabit = null;
