@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'screens/splash_screen.dart'; // FIXED: Now imports the Splash Screen
+import 'screens/splash_screen.dart'; 
 import 'services/notification_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -30,7 +30,7 @@ class OrbitApp extends StatelessWidget {
           title: 'Orbit',
           debugShowCheckedModeBanner: false,
           theme: _buildTheme(paletteIndex),
-          home: const SplashScreen(), // FIXED: App now boots into the Splash Screen
+          home: const SplashScreen(), // App boots into the Splash Screen
         );
       },
     );

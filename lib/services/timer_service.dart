@@ -9,6 +9,15 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
   
   TimerService._internal() {
     WidgetsBinding.instance.addObserver(this);
+    
+    // NEW: Listen to the buttons pressed in the notification tray!
+    NotificationService.onAction = (actionId) {
+      if (actionId == 'pause_action') {
+        pause();
+      } else if (actionId == 'stop_action') {
+        stopAndCancel();
+      }
+    };
   }
 
   Habit? activeHabit;
@@ -20,16 +29,21 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
   DateTime? endTime;
   Timer? _timer;
 
-  // Callback to inform screens when the mission is complete
   Function(Habit, int)? onTimerComplete;
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // If user returns to app, sync the timer instantly based on the wall clock
-    if (state == AppLifecycleState.resumed && isRunning && !isPaused && endTime != null) {
+    if (state == AppLifecycleState.resumed) {
+      syncBackgroundTime();
+    }
+  }
+
+  void syncBackgroundTime() {
+    if (isRunning && !isPaused && endTime != null) {
       final remaining = endTime!.difference(DateTime.now()).inSeconds;
       if (remaining <= 0) {
         currentSeconds = 0;
+        elapsedSeconds = totalSeconds; 
         complete();
       } else {
         currentSeconds = remaining;
@@ -56,6 +70,8 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
     isPaused = false;
     endTime = DateTime.now().add(Duration(seconds: currentSeconds));
     
+    // Pass currentSeconds so the OS automatically deletes the sticky notification when time is up
+    NotificationService().showActiveTimerNotification(activeHabit!.name, currentSeconds);
     NotificationService().scheduleFocusComplete(currentSeconds, activeHabit!.name);
 
     _timer?.cancel();
@@ -74,7 +90,9 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
   void pause() {
     isPaused = true;
     _timer?.cancel();
-    NotificationService().cancelNotifications();
+    // User paused, so clear the active sticky and cancel the complete alarm
+    NotificationService().cancelActiveTimerNotification(); 
+    NotificationService().cancelFocusTimerAlarm(); 
     notifyListeners();
   }
 
@@ -82,7 +100,8 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
     isRunning = false;
     isPaused = false;
     _timer?.cancel();
-    NotificationService().cancelNotifications();
+    NotificationService().cancelActiveTimerNotification();
+    NotificationService().cancelFocusTimerAlarm(); 
     activeHabit = null;
     notifyListeners();
   }
@@ -91,11 +110,15 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
     _timer?.cancel();
     isRunning = false;
     isPaused = false;
+    
+    // This triggers the home screen code to automatically check the task off in the app!
     if (activeHabit != null && onTimerComplete != null) {
       onTimerComplete!(activeHabit!, elapsedSeconds); 
     }
     activeHabit = null;
-    NotificationService().cancelNotifications();
+    
+    // Clear only the sticky notification (the timeoutAfter should also handle this, but this is a safe backup)
+    NotificationService().cancelActiveTimerNotification();
     notifyListeners();
   }
 

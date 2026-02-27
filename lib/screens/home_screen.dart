@@ -11,6 +11,7 @@ import '../widgets/add_habit_sheet.dart';
 import 'edit_habit_screen.dart';
 import 'focus_mode_screen.dart'; 
 import '../services/timer_service.dart';
+import '../services/notification_service.dart'; 
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -19,7 +20,7 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   List<Habit> habits = [];
   Map<String, String> _journals = {};
   final TextEditingController _journalController = TextEditingController();
@@ -38,14 +39,20 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this); 
     _confettiController = ConfettiController(duration: const Duration(seconds: 2));
     _loadData();
     
+    NotificationService().requestPermission().then((allowed) {
+      if (allowed) {
+        NotificationService().scheduleDailyReminder();
+      }
+    });
+
     _journalController.addListener(() {
       _saveJournal(_journalController.text);
     });
 
-    // GLOBAL TIMER LISTENER
     TimerService().onTimerComplete = (habit, elapsedSeconds) {
       _handleTimerComplete(habit, elapsedSeconds);
     };
@@ -53,6 +60,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _confettiController.dispose();
     _timelineController.dispose();
     _journalController.dispose();
@@ -60,33 +68,48 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      TimerService().syncBackgroundTime();
+      setState(() {}); 
+    } else if (state == AppLifecycleState.detached) {
+      NotificationService().cancelActiveTimerNotification();
+    }
+  }
+
   void _handleTimerComplete(Habit habit, int elapsedSeconds) async {
     HapticFeedback.heavyImpact();
     
+    setState(() {
+      int index = habits.indexWhere((h) => h.id == habit.id);
+      if (index != -1) {
+        habits[index].totalFocusSeconds += elapsedSeconds;
+
+        // FIXED: Always mark the habit completed for ACTUAL TODAY, automatically.
+        final now = DateTime.now();
+        final actualTodayString = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+        
+        if (!habits[index].completedDays.contains(actualTodayString)) {
+          habits[index].completedDays.add(actualTodayString);
+          _checkCelebration();
+        }
+      }
+    });
+    
+    // Save to the master database instantly!
+    await _saveHabits();
+
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text("🚀 Mission Accomplished: ${habit.name}!"),
+          content: Text("✅ Task Completed: ${habit.name}!"),
           backgroundColor: Color(habit.colorValue),
           behavior: SnackBarBehavior.floating,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         ),
       );
     }
-
-    setState(() {
-      int index = habits.indexWhere((h) => h.id == habit.id);
-      if (index != -1) {
-        habits[index].totalFocusSeconds += elapsedSeconds;
-      }
-
-      final dateString = "${_selectedDate.year}-${_selectedDate.month.toString().padLeft(2, '0')}-${_selectedDate.day.toString().padLeft(2, '0')}";
-      if (!habit.completedDays.contains(dateString)) {
-        habit.completedDays.add(dateString);
-        _checkCelebration();
-      }
-    });
-    await _saveHabits();
   }
 
   Future<void> _loadData() async {
@@ -296,7 +319,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final now = _stripTime(DateTime.now());
     bool isViewingPast = !_selectedDate.isAtSameMomentAs(now);
     
-    // --- ABSOLUTE BULLETPROOF THEME COLORS ---
     final isLight = Theme.of(context).brightness == Brightness.light;
     final Color bgColor = isLight ? const Color(0xFFF8F9FA) : const Color(0xFF09090B);
     final Color textColor = isLight ? const Color(0xFF1A1A1A) : Colors.white;
@@ -441,7 +463,6 @@ class _HomeScreenState extends State<HomeScreen> {
                     ).animate().fadeIn(delay: 200.ms),
                     const SizedBox(height: 24),
                     
-                    // FIXED: Captain's Log Left-Aligned & Proper Dark/Light Text
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
                       decoration: BoxDecoration(
@@ -484,7 +505,6 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     const SizedBox(height: 16),
                     
-                    // FIXED: Replaced AnimatedSwitcher to ensure newly added tasks appear instantly
                     Expanded(
                       child: AnimatedBuilder(
                         animation: TimerService(),
@@ -649,7 +669,6 @@ class PremiumHabitCard extends StatelessWidget {
         margin: const EdgeInsets.only(bottom: 16),
         padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
-          // FIXED: Clean solid color when complete. No cringe glow.
           color: isSelectedForDeletion 
               ? Colors.redAccent.withValues(alpha: 0.1) 
               : (isDone && !isSelectionMode ? dynamicColor.withValues(alpha: 0.1) : cardColor),
@@ -662,7 +681,6 @@ class PremiumHabitCard extends StatelessWidget {
                     : (isDone && !isSelectionMode ? dynamicColor.withValues(alpha: 0.3) : borderColor)), 
             width: (isSelectedForDeletion || isActiveTimer) ? 1.5 : 1
           ),
-          // FIXED: Only active timers get a box shadow. Done tasks are flat and clean.
           boxShadow: isActiveTimer ? [BoxShadow(color: dynamicColor.withValues(alpha: 0.1), blurRadius: 20, spreadRadius: -5)] : [],
         ),
         child: Opacity(
@@ -697,7 +715,6 @@ class PremiumHabitCard extends StatelessWidget {
                         fontWeight: (isDone || isSelectedForDeletion) ? FontWeight.w700 : FontWeight.w600, 
                         letterSpacing: -0.3, 
                         decoration: isDone ? TextDecoration.lineThrough : null,
-                        // FIXED: Readable text color when completed, regardless of theme!
                         color: isSelectedForDeletion ? Colors.redAccent : (isDone && !isSelectionMode ? mutedTextColor : textColor)
                       ),
                       child: Text(habit.name),
