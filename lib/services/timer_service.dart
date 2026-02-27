@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/habit.dart';
 import 'notification_service.dart';
 
@@ -10,7 +11,6 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
   TimerService._internal() {
     WidgetsBinding.instance.addObserver(this);
     
-    // NEW: Listen to the buttons pressed in the notification tray!
     NotificationService.onAction = (actionId) {
       if (actionId == 'pause_action') {
         pause();
@@ -37,6 +37,59 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
       syncBackgroundTime();
     }
   }
+
+  // --- NEW: THE "DEAD APP" RECOVERY SYSTEM ---
+  Future<void> restoreState(List<Habit> habits) async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedHabitId = prefs.getString('orbit_active_timer_habit');
+    final savedEndTimeStr = prefs.getString('orbit_active_timer_end');
+    final savedTotalSecs = prefs.getInt('orbit_active_timer_total');
+
+    if (savedHabitId != null && savedEndTimeStr != null && savedTotalSecs != null) {
+      final savedEndTime = DateTime.parse(savedEndTimeStr);
+      final now = DateTime.now();
+      
+      try {
+        final habit = habits.firstWhere((h) => h.id == savedHabitId);
+        
+        if (now.isAfter(savedEndTime)) {
+          // The timer finished while the app was completely closed!
+          if (onTimerComplete != null) {
+            onTimerComplete!(habit, savedTotalSecs);
+          }
+          await _clearDiskState();
+        } else {
+          // App was reopened and timer is STILL running. Resume the UI!
+          activeHabit = habit;
+          totalSeconds = savedTotalSecs;
+          currentSeconds = savedEndTime.difference(now).inSeconds;
+          elapsedSeconds = totalSeconds - currentSeconds;
+          endTime = savedEndTime;
+          isRunning = true;
+          
+          _startInternalTimer();
+          notifyListeners();
+        }
+      } catch (e) {
+        await _clearDiskState(); // Habit was deleted or not found
+      }
+    }
+  }
+
+  Future<void> _saveToDisk(Habit habit, DateTime end, int totalSecs) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('orbit_active_timer_habit', habit.id);
+    await prefs.setString('orbit_active_timer_end', end.toIso8601String());
+    await prefs.setInt('orbit_active_timer_total', totalSecs);
+  }
+
+  Future<void> _clearDiskState() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('orbit_active_timer_habit');
+    await prefs.remove('orbit_active_timer_end');
+    await prefs.remove('orbit_active_timer_total');
+  }
+  // -------------------------------------------
 
   void syncBackgroundTime() {
     if (isRunning && !isPaused && endTime != null) {
@@ -70,10 +123,18 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
     isPaused = false;
     endTime = DateTime.now().add(Duration(seconds: currentSeconds));
     
-    // Pass currentSeconds so the OS automatically deletes the sticky notification when time is up
+    // Save to hard drive immediately in case user swipes app away
+    _saveToDisk(activeHabit!, endTime!, totalSeconds);
+    
+    // Trigger OS-level background notifications
     NotificationService().showActiveTimerNotification(activeHabit!.name, currentSeconds);
     NotificationService().scheduleFocusComplete(currentSeconds, activeHabit!.name);
 
+    _startInternalTimer();
+    notifyListeners();
+  }
+
+  void _startInternalTimer() {
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (currentSeconds > 0) {
@@ -84,13 +145,12 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
         complete();
       }
     });
-    notifyListeners();
   }
 
   void pause() {
     isPaused = true;
     _timer?.cancel();
-    // User paused, so clear the active sticky and cancel the complete alarm
+    _clearDiskState(); // Clear hard drive state
     NotificationService().cancelActiveTimerNotification(); 
     NotificationService().cancelFocusTimerAlarm(); 
     notifyListeners();
@@ -100,6 +160,7 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
     isRunning = false;
     isPaused = false;
     _timer?.cancel();
+    _clearDiskState();
     NotificationService().cancelActiveTimerNotification();
     NotificationService().cancelFocusTimerAlarm(); 
     activeHabit = null;
@@ -111,14 +172,15 @@ class TimerService extends ChangeNotifier with WidgetsBindingObserver {
     isRunning = false;
     isPaused = false;
     
-    // This triggers the home screen code to automatically check the task off in the app!
+    // Clear state
+    _clearDiskState();
+    NotificationService().cancelActiveTimerNotification();
+
     if (activeHabit != null && onTimerComplete != null) {
       onTimerComplete!(activeHabit!, elapsedSeconds); 
     }
-    activeHabit = null;
     
-    // Clear only the sticky notification (the timeoutAfter should also handle this, but this is a safe backup)
-    NotificationService().cancelActiveTimerNotification();
+    activeHabit = null;
     notifyListeners();
   }
 

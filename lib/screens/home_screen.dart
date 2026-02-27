@@ -41,7 +41,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this); 
     _confettiController = ConfettiController(duration: const Duration(seconds: 2));
-    _loadData();
+    
+    // Load habits, then IMMEDIATELY check if a timer finished while the app was dead
+    _loadData().then((_) {
+      TimerService().restoreState(habits);
+    });
     
     NotificationService().requestPermission().then((allowed) {
       if (allowed) {
@@ -73,43 +77,47 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       TimerService().syncBackgroundTime();
       setState(() {}); 
-    } else if (state == AppLifecycleState.detached) {
-      NotificationService().cancelActiveTimerNotification();
-    }
+    } 
   }
 
   void _handleTimerComplete(Habit habit, int elapsedSeconds) async {
-    HapticFeedback.heavyImpact();
+    // 1. SILENT DATA SAVE (Works 100% of the time, even if app is closed/locked)
+    bool newlyCompleted = false;
+    int index = habits.indexWhere((h) => h.id == habit.id);
     
-    setState(() {
-      int index = habits.indexWhere((h) => h.id == habit.id);
-      if (index != -1) {
-        habits[index].totalFocusSeconds += elapsedSeconds;
-
-        // FIXED: Always mark the habit completed for ACTUAL TODAY, automatically.
-        final now = DateTime.now();
-        final actualTodayString = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
-        
-        if (!habits[index].completedDays.contains(actualTodayString)) {
-          habits[index].completedDays.add(actualTodayString);
-          _checkCelebration();
-        }
+    if (index != -1) {
+      habits[index].totalFocusSeconds += elapsedSeconds;
+      final now = DateTime.now();
+      final actualTodayString = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+      
+      if (!habits[index].completedDays.contains(actualTodayString)) {
+        habits[index].completedDays.add(actualTodayString);
+        newlyCompleted = true;
       }
-    });
+    }
     
-    // Save to the master database instantly!
+    // Force write to disk immediately
     await _saveHabits();
 
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("✅ Task Completed: ${habit.name}!"),
-          backgroundColor: Color(habit.colorValue),
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        ),
-      );
+    // 2. STOP HERE IF APP IS NOT VISIBLE. This completely prevents the crash.
+    if (!mounted || WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+      return; 
     }
+
+    // 3. UI UPDATES (Only runs if you are actively looking at the app)
+    HapticFeedback.heavyImpact();
+    setState(() {
+      if (newlyCompleted) _checkCelebration();
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text("✅ Task Completed: ${habit.name}!"),
+        backgroundColor: Color(habit.colorValue),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      ),
+    );
   }
 
   Future<void> _loadData() async {
